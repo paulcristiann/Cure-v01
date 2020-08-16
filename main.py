@@ -4,6 +4,7 @@ import datetime
 import re
 import sqlite3
 import sys
+import threading
 import time
 import traceback
 from threading import Thread
@@ -20,7 +21,7 @@ try:
     listening_channel = config['USER']['ListenOn']
     webhook_list = config['USER']['Webhooks']
     # Wait time in seconds
-    wait_time = 60
+    wait_time = 86400
     ################################################
 except Exception:
     traceback.print_exc()
@@ -36,12 +37,16 @@ def print_status():
 
 
 def send_to_webhook(payload, webhook):
-    print('Sending payload', payload, 'to webhook', webhook)
+    print(datetime.datetime.now(), '| Sending payload', payload, 'to webhook', webhook)
     try:
         r = requests.post(webhook, data=payload)
     except:
         print('Error sending data to the webhook')
 
+def print_active_threads(var):
+    print('---------------------------------------')
+    print('Total threads active:', var-1)
+    print('---------------------------------------')
 
 def start_thread(coin, time_to_wait):
     con = sqlite3.connect('cure_db.sqlite')
@@ -49,22 +54,26 @@ def start_thread(coin, time_to_wait):
     del_sql = f"DELETE from pending where coin = \"{coin}\""
     cs.execute(del_sql)
     con.commit()
-    print(
-        f'Started worker for coin {coin} - waiting until {datetime.datetime.now() + datetime.timedelta(seconds=wait_time)}')
+    print(datetime.datetime.now(), f'| Started worker for coin {coin} - waiting until {datetime.datetime.now() + datetime.timedelta(seconds=time_to_wait)}')
     print('~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~')
+    print_active_threads(threading.active_count())
     sql = ''' INSERT INTO pending(coin,begin_date,thread_status)
+                  VALUES(?,?,?) '''
+    sql_log = ''' INSERT INTO log(coin,begin_date,thread_status)
                   VALUES(?,?,?) '''
     pend = (coin, str(datetime.datetime.now()), 'running')
     cs.execute(sql, pend)
+    cs.execute(sql_log, pend)
     con.commit()
-    finishing_at = datetime.datetime.now() + datetime.timedelta(seconds=wait_time)
+    finishing_at = datetime.datetime.now() + datetime.timedelta(seconds=time_to_wait)
     while 1:
         data = cs.execute(f'select * from pending where coin=\"{coin}\";').fetchall()[0]
         if finishing_at <= datetime.datetime.now():
             print()
             print('~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~')
-            print(f'{coin}-Thread finished')
+            print(datetime.datetime.now(), f'| {coin}-Thread finished')
             print('~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~')
+            print_active_threads(threading.active_count()-1)
             cs.execute(del_sql)
             con.commit()
             # send to webhook
@@ -75,8 +84,9 @@ def start_thread(coin, time_to_wait):
             if data[3] == 'stopped':
                 print()
                 print('~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~')
-                print(f'{coin}-Thread was stopped')
+                print(datetime.datetime.now(), f'| {coin}-Thread was stopped')
                 print('~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~')
+                print_active_threads(threading.active_count()-1)
                 cs.execute(del_sql)
                 con.commit()
                 return
@@ -99,7 +109,7 @@ async def parser(message):
         if ('BUY AGAIN' in eachline.upper()):
             # Buy again logic
             coin = re.findall(r"#(\w+)", eachline)[0]
-            print(f'Buy again received for {coin}')
+            print(datetime.datetime.now(), f'| Buy again received for {coin}')
             print('~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~')
             update_sql = f'''UPDATE pending SET thread_status = 'stopped' WHERE coin = \"{coin}\";'''
             con = sqlite3.connect('cure_db.sqlite')
@@ -116,7 +126,7 @@ async def parser(message):
         if ('REACHED' in eachline.upper()):
             # Target reached logic
             coin = re.findall(r"#(\w+)", eachline)[0]
-            print(f'Target reached received for {coin}')
+            print(datetime.datetime.now(), f'| Target reached received for {coin}')
             print('~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~')
             update_sql = f'''UPDATE pending SET thread_status = 'stopped' WHERE coin = \"{coin}\";'''
             con = sqlite3.connect('cure_db.sqlite')
@@ -161,7 +171,15 @@ sql_create_table = """ CREATE TABLE IF NOT EXISTS pending (
                                         begin_date text,
                                         thread_status text
                                     ); """
+
+sql_create_log = """ CREATE TABLE IF NOT EXISTS log (
+                                        id integer PRIMARY KEY,
+                                        coin text NOT NULL,
+                                        begin_date text,
+                                        thread_status text
+                                    ); """
 c.execute(sql_create_table)
+c.execute(sql_create_log)
 
 cursor = c.execute('select * from pending;')
 
